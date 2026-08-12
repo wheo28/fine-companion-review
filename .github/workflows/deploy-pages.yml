@@ -1,0 +1,75 @@
+name: Deploy FinE Companion Review
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout encrypted review package
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Decrypt build source
+        env:
+          BUILD_ARCHIVE_PASSWORD: ${{ secrets.BUILD_ARCHIVE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${BUILD_ARCHIVE_PASSWORD:-}" ]; then
+            echo "BUILD_ARCHIVE_PASSWORD repository secret is not set."
+            exit 1
+          fi
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 \
+            -in app-source.tar.gz.enc \
+            -out app-source.tar.gz \
+            -pass env:BUILD_ARCHIVE_PASSWORD
+          mkdir app
+          tar -xzf app-source.tar.gz -C app
+          rm -f app-source.tar.gz
+
+      - name: Install dependencies
+        working-directory: app
+        run: npm ci
+
+      - name: Run RC6.10 tests
+        working-directory: app
+        run: npm test
+
+      - name: Build for this GitHub Pages repository
+        working-directory: app
+        env:
+          VITE_BASE_PATH: /${{ github.event.repository.name }}/
+        run: npm run build
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: ./app/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
